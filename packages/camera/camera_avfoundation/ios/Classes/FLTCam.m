@@ -38,11 +38,13 @@
 @end
 
 @interface FLTCam () <AVCaptureVideoDataOutputSampleBufferDelegate,
-                      AVCaptureAudioDataOutputSampleBufferDelegate>
+                      AVCaptureAudioDataOutputSampleBufferDelegate,
+                      AVCaptureMetadataOutputObjectsDelegate>
 
 @property(readonly, nonatomic) int64_t textureId;
 @property BOOL enableAudio;
 @property(nonatomic) FLTImageStreamHandler *imageStreamHandler;
+@property(nonatomic) FLTImageStreamHandler *qrStreamHandler;
 @property(readonly, nonatomic) AVCaptureSession *captureSession;
 
 @property(readonly, nonatomic) AVCaptureInput *captureVideoInput;
@@ -56,12 +58,14 @@
 @property(strong, nonatomic) AVAssetWriterInputPixelBufferAdaptor *assetWriterPixelBufferAdaptor;
 @property(strong, nonatomic) AVCaptureVideoDataOutput *videoOutput;
 @property(strong, nonatomic) AVCaptureAudioDataOutput *audioOutput;
+@property(strong, nonatomic) AVCaptureMetadataOutput *captureMetadataOutput;
 @property(strong, nonatomic) NSString *videoRecordingPath;
 @property(assign, nonatomic) BOOL isRecording;
 @property(assign, nonatomic) BOOL isRecordingPaused;
 @property(assign, nonatomic) BOOL videoIsDisconnected;
 @property(assign, nonatomic) BOOL audioIsDisconnected;
 @property(assign, nonatomic) BOOL isAudioSetup;
+@property(assign, nonatomic) BOOL isStreamingQr;
 
 /// Number of frames currently pending processing.
 @property(assign, nonatomic) int streamingPendingFramesCount;
@@ -78,6 +82,7 @@
 @property AVAssetWriterInputPixelBufferAdaptor *videoAdaptor;
 /// All FLTCam's state access and capture session related operations should be on run on this queue.
 @property(strong, nonatomic) dispatch_queue_t captureSessionQueue;
+@property(strong, nonatomic) dispatch_queue_t captureQrQueue;
 /// The queue on which `latestPixelBuffer` property is accessed.
 /// To avoid unnecessary contention, do not access `latestPixelBuffer` on the `captureSessionQueue`.
 @property(strong, nonatomic) dispatch_queue_t pixelBufferSynchronizationQueue;
@@ -122,6 +127,7 @@ NSString *const errorMethod = @"error";
   }
   _enableAudio = enableAudio;
   _captureSessionQueue = captureSessionQueue;
+  _captureQrQueue = dispatch_queue_create("io.flutter.camera.qrQueue", NULL);
   _pixelBufferSynchronizationQueue =
       dispatch_queue_create("io.flutter.camera.pixelBufferSynchronizationQueue", NULL);
   _photoIOQueue = dispatch_queue_create("io.flutter.camera.photoIOQueue", NULL);
@@ -953,6 +959,56 @@ NSString *const errorMethod = @"error";
   }
 }
 
+- (void)startQrStreamWithMessenger:(NSObject<FlutterBinaryMessenger> *) messenger {
+    if (!_isStreamingQr) {
+        FlutterEventChannel *eventChannel =
+            [FlutterEventChannel eventChannelWithName:@"plugins.flutter.io/camera_avfoundation/qrStream"
+                                      binaryMessenger:messenger];
+        FLTThreadSafeEventChannel *threadSafeEventChannel =
+            [[FLTThreadSafeEventChannel alloc] initWithEventChannel:eventChannel];
+
+        _captureMetadataOutput = [[AVCaptureMetadataOutput alloc] init];
+
+        if ([_captureSession canAddOutput:_captureMetadataOutput]) {
+            [_captureSession addOutput:_captureMetadataOutput];
+        }
+
+        [_captureMetadataOutput setMetadataObjectsDelegate:self queue:_captureQrQueue];
+
+        [_captureMetadataOutput setMetadataObjectTypes:@[AVMetadataObjectTypeQRCode,]];
+
+        _qrStreamHandler = [[FLTImageStreamHandler alloc] initWithCaptureSessionQueue:_captureQrQueue];
+        __weak typeof(self) weakSelf = self;
+        [threadSafeEventChannel setStreamHandler:_qrStreamHandler
+                                      completion:^{
+                                        typeof(self) strongSelf = weakSelf;
+                                        if (!strongSelf) return;
+
+                                        dispatch_async(strongSelf.captureSessionQueue, ^{
+                                          // cannot use the outter strongSelf
+                                          typeof(self) strongSelf = weakSelf;
+                                          if (!strongSelf) return;
+
+                                          strongSelf.isStreamingQr = YES;
+                                        });
+                                      }];
+    } else {
+        [_methodChannel invokeMethod:errorMethod
+                           arguments:@"Qr from camera are already streaming!"];
+      }
+}
+
+- (void)stopQrStream {
+    if (_isStreamingQr) {
+      [_captureSession removeOutput: _captureMetadataOutput];
+      _isStreamingQr = NO;
+      _imageStreamHandler = nil;
+      _captureMetadataOutput = nil;
+    } else {
+      [_methodChannel invokeMethod:errorMethod arguments:@"Qr from camera are not streaming!"];
+    }
+}
+
 - (void)receivedImageStreamData {
   self.streamingPendingFramesCount--;
 }
@@ -1103,5 +1159,23 @@ NSString *const errorMethod = @"error";
       _isAudioSetup = NO;
     }
   }
+}
+
+// AVCaptureMetadataOutputObjectsDelegate method
+- (void)captureOutput:(AVCaptureOutput *)captureOutput
+    didOutputMetadataObjects:(NSArray *)metadataObjects
+       fromConnection:(AVCaptureConnection *)connection {
+
+    FlutterEventSink eventSink = _qrStreamHandler.eventSink;
+    if (eventSink) {
+        for (AVMetadataObject *barcodeMetadata in metadataObjects) {
+            if ([barcodeMetadata isMemberOfClass:[AVMetadataMachineReadableCodeObject class]]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  NSString *capturedBarcode = [(AVMetadataMachineReadableCodeObject *)barcodeMetadata stringValue];
+                  eventSink(capturedBarcode);
+                });
+            }
+        }
+    }
 }
 @end

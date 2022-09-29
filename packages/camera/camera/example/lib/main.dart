@@ -69,6 +69,8 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
   // Counting pointers (number of user fingers on screen)
   int _pointers = 0;
 
+  String qr = 'no qr';
+
   @override
   void initState() {
     super.initState();
@@ -156,6 +158,7 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
           ),
           _captureControlRowWidget(),
           _modeControlRowWidget(),
+          Text(qr),
           Padding(
             padding: const EdgeInsets.all(5.0),
             child: Row(
@@ -291,7 +294,12 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
                       color: Colors.blue,
                       onPressed:
                           controller != null ? onFocusModeButtonPressed : null,
-                    )
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.exposure),
+                      color: Colors.blue,
+                      onPressed: controller != null ? onExposureModeButtonPressed : null,
+                    ),
                   ]
                 : <Widget>[],
             IconButton(
@@ -308,6 +316,11 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
                   ? onCaptureOrientationLockButtonPressed
                   : null,
             ),
+            IconButton(
+              icon: const Icon(Icons.qr_code),
+              color: Colors.blue,
+              onPressed: controller != null ? () => controller!.startQrStream(_handleQr) : null,
+            ),
           ],
         ),
         _flashModeControlRowWidget(),
@@ -315,6 +328,12 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
         _focusModeControlRowWidget(),
       ],
     );
+  }
+
+  void _handleQr(String? qr) {
+    setState(() {
+      this.qr = qr ?? 'no qr';
+    });
   }
 
   Widget _flashModeControlRowWidget() {

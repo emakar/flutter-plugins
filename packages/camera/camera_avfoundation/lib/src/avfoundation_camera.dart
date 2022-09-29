@@ -299,6 +299,43 @@ class AVFoundationCamera extends CameraPlatform {
     return _frameStreamController!.stream;
   }
 
+  // The stream to receive qr from the native code.
+  StreamSubscription<dynamic>? _platformQrStreamSubscription;
+  StreamController<String>? _qrStreamController;
+
+  @override
+  Stream<String> onQrAvailable(int cameraId) {
+    _qrStreamController = StreamController<String>(
+      onListen: _startQrListen,
+      onPause: _onQrStreamPauseResume,
+      onResume: _onQrStreamPauseResume,
+      onCancel: _cancelQrListen,
+    );
+    return _qrStreamController!.stream;
+  }
+
+  void _startQrListen() async {
+    await _channel.invokeMethod<void>('startQrStream');
+    const EventChannel qrEventChannel = EventChannel('plugins.flutter.io/camera_avfoundation/qrStream');
+    _platformQrStreamSubscription = qrEventChannel.receiveBroadcastStream().listen((dynamic qr) {
+      if (qr is String) {
+        _qrStreamController?.add(qr);
+      }
+    });
+  }
+
+  FutureOr<void> _cancelQrListen() async {
+    await _channel.invokeMethod<void>('stopQrStream');
+    await _platformQrStreamSubscription?.cancel();
+    _platformQrStreamSubscription = null;
+    _qrStreamController = null;
+  }
+
+  void _onQrStreamPauseResume() {
+    throw CameraException('InvalidCall',
+        'Pause and resume are not supported for onQrAvailable');
+  }
+
   void _onFrameStreamListen() {
     _startPlatformStream();
   }

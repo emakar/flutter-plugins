@@ -152,6 +152,12 @@
   } else if ([@"receivedImageStreamData" isEqualToString:call.method]) {
     [_camera receivedImageStreamData];
     [result sendSuccess];
+  } else if ([@"startQrStream" isEqualToString:call.method]) {
+    [_camera startQrStreamWithMessenger:_messenger];
+    [result sendSuccess];
+  } else if ([@"stopQrStream" isEqualToString:call.method]) {
+    [_camera stopQrStream];
+    [result sendSuccess];
   } else {
     NSDictionary *argsMap = call.arguments;
     NSUInteger cameraId = ((NSNumber *)argsMap[@"cameraId"]).unsignedIntegerValue;

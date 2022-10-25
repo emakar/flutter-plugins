@@ -35,6 +35,7 @@ final class MethodCallHandlerImpl implements MethodChannel.MethodCallHandler {
   private final TextureRegistry textureRegistry;
   private final MethodChannel methodChannel;
   private final EventChannel imageStreamChannel;
+  private final EventChannel qrStreamChannel;
   private @Nullable Camera camera;
 
   MethodCallHandlerImpl(
@@ -52,6 +53,7 @@ final class MethodCallHandlerImpl implements MethodChannel.MethodCallHandler {
     methodChannel = new MethodChannel(messenger, "plugins.flutter.io/camera_android");
     imageStreamChannel =
         new EventChannel(messenger, "plugins.flutter.io/camera_android/imageStream");
+    qrStreamChannel = new EventChannel(messenger, "plugins.flutter.io/camera_android/qrStream");
     methodChannel.setMethodCallHandler(this);
   }
 
@@ -260,9 +262,20 @@ final class MethodCallHandlerImpl implements MethodChannel.MethodCallHandler {
           break;
         }
       case "stopImageStream":
+      case "stopQrStream":
         {
           try {
             camera.startPreview();
+            result.success(null);
+          } catch (Exception e) {
+            handleException(e, result);
+          }
+          break;
+        }
+      case "startQrStream":
+        {
+          try {
+            camera.startQrWithStringStream(qrStreamChannel);
             result.success(null);
           } catch (Exception e) {
             handleException(e, result);

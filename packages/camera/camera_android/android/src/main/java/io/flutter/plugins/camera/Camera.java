@@ -37,6 +37,12 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
+
+import com.google.mlkit.vision.barcode.BarcodeScanner;
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions;
+import com.google.mlkit.vision.barcode.BarcodeScanning;
+import com.google.mlkit.vision.barcode.common.Barcode;
+
 import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.plugin.common.EventChannel;
 import io.flutter.plugin.common.MethodChannel;
@@ -68,11 +74,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 @FunctionalInterface
 interface ErrorCallback {
@@ -145,6 +155,7 @@ class Camera
   /** True when the preview is paused. */
   private boolean pausedPreview;
 
+  private final BlockingQueue<List<Barcode>> barcodeQueue = new ArrayBlockingQueue<>(1);
   private File captureFile;
 
   /** Holds the current capture timeouts */
@@ -153,6 +164,25 @@ class Camera
   private CameraCaptureProperties captureProps;
 
   private MethodChannel.Result flutterResult;
+
+  @Nullable
+  private BarcodeScanner scanner;
+  private final Object scannerLock = new Object();
+
+  @NonNull
+  private BarcodeScanner getScanner() {
+    if (scanner == null) {
+      synchronized (scannerLock) {
+        if (scanner == null) {
+          BarcodeScannerOptions options = new BarcodeScannerOptions.Builder()
+              .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+              .build();
+          scanner = BarcodeScanning.getClient(options);
+        }
+      }
+    }
+    return scanner;
+  }
 
   /** A CameraDeviceWrapper implementation that forwards calls to a CameraDevice. */
   private class DefaultCameraDeviceWrapper implements CameraDeviceWrapper {
@@ -669,10 +699,11 @@ class Camera
 
   /** Stops the background thread and its {@link Handler}. */
   public void stopBackgroundThread() {
+    HandlerThread backgroundHandlerThread = this.backgroundHandlerThread;
     if (backgroundHandlerThread != null) {
       backgroundHandlerThread.quitSafely();
     }
-    backgroundHandlerThread = null;
+    this.backgroundHandlerThread = null;
     backgroundHandler = null;
   }
 
@@ -1090,6 +1121,56 @@ class Camera
         });
   }
 
+  public void startQrWithStringStream(EventChannel imageStreamChannel)
+      throws CameraAccessException {
+    createCaptureSession(CameraDevice.TEMPLATE_RECORD, imageStreamReader.getSurface());
+    Log.i(TAG, "startPreviewWithImageStream(QR)");
+
+    final BarcodeScanner scanner = getScanner();
+    final Handler handler = new Handler(Looper.getMainLooper());
+
+    imageStreamChannel.setStreamHandler(new EventChannel.StreamHandler() {
+      @Override
+      public void onListen(Object o, EventChannel.EventSink imageStreamSink) {
+        imageStreamReader.setOnImageAvailableListener(
+            reader -> {
+              Image img = reader.acquireLatestImage();
+              if (img == null) return;
+
+              scanner.process(img, cameraFeatures.getSensorOrientation().getValue())
+                  .addOnSuccessListener(barcodeQueue::offer)
+                  .addOnFailureListener(e -> {
+                    cancelBarcodeAwait();
+                    handler.post(() -> imageStreamSink.error("0", e.getMessage(), null));
+                  })
+                  .addOnCanceledListener(() -> cancelBarcodeAwait());
+
+              try {
+                final List<Barcode> barcodes = barcodeQueue.poll(3, TimeUnit.SECONDS);
+                if (barcodes != null && !barcodes.isEmpty()) {
+                  handler.post(() -> {
+                    for (Barcode barcode : barcodes) {
+                      imageStreamSink.success(barcode.getRawValue());
+                    }
+                  });
+                }
+              } catch (InterruptedException e) {
+                // ignore
+              } finally {
+                img.close();
+              }
+            },
+            backgroundHandler);
+      }
+
+      @Override
+      public void onCancel(Object o) {
+        cancelBarcodeAwait();
+        imageStreamReader.setOnImageAvailableListener(null, backgroundHandler);
+      }
+    });
+  }
+
   /**
    * This a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
    * still image is ready to be saved.
@@ -1158,20 +1239,26 @@ class Camera
   }
 
   private void closeCaptureSession() {
-    if (captureSession != null) {
+    CameraCaptureSession session = this.captureSession;
+    if (session != null) {
       Log.i(TAG, "closeCaptureSession");
 
-      captureSession.close();
-      captureSession = null;
+      session.close();
+      this.captureSession = null;
     }
   }
 
   public void close() {
     Log.i(TAG, "close");
 
+    final CameraDeviceWrapper cameraDevice = this.cameraDevice;
+    final ImageReader pictureImageReader = this.pictureImageReader;
+    final ImageReader imageStreamReader = this.imageStreamReader;
+    final MediaRecorder mediaRecorder = this.mediaRecorder;
+
     if (cameraDevice != null) {
       cameraDevice.close();
-      cameraDevice = null;
+      this.cameraDevice = null;
 
       // Closing the CameraDevice without closing the CameraCaptureSession is recommended
       // for quickly closing the camera:
@@ -1183,19 +1270,24 @@ class Camera
 
     if (pictureImageReader != null) {
       pictureImageReader.close();
-      pictureImageReader = null;
+      this.pictureImageReader = null;
     }
     if (imageStreamReader != null) {
       imageStreamReader.close();
-      imageStreamReader = null;
+      this.imageStreamReader = null;
     }
     if (mediaRecorder != null) {
       mediaRecorder.reset();
       mediaRecorder.release();
-      mediaRecorder = null;
+      this.mediaRecorder = null;
     }
 
+    cancelBarcodeAwait();
     stopBackgroundThread();
+  }
+
+  private void cancelBarcodeAwait() {
+    barcodeQueue.offer(Collections.emptyList());
   }
 
   public void dispose() {

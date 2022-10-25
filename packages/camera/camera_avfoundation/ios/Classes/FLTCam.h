@@ -91,6 +91,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setExposureOffsetWithResult:(FLTThreadSafeFlutterResult *)result offset:(double)offset;
 - (void)startImageStreamWithMessenger:(NSObject<FlutterBinaryMessenger> *)messenger;
 - (void)stopImageStream;
+- (void)startQrStreamWithMessenger:(NSObject<FlutterBinaryMessenger> *) messenger;
+- (void)stopQrStream;
 - (void)getMaxZoomLevelWithResult:(FLTThreadSafeFlutterResult *)result;
 - (void)getMinZoomLevelWithResult:(FLTThreadSafeFlutterResult *)result;
 - (void)setZoomLevel:(CGFloat)zoom Result:(FLTThreadSafeFlutterResult *)result;

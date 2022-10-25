@@ -21,6 +21,9 @@ import '../camera.dart';
 // ignore: camel_case_types
 typedef onLatestImageAvailable = Function(CameraImage image);
 
+/// Qr callback
+typedef OnQrAvailable = Function(String qr);
+
 /// Completes with a list of available cameras.
 ///
 /// May throw a [CameraException].
@@ -42,6 +45,7 @@ class CameraValue {
     required this.isRecordingVideo,
     required this.isTakingPicture,
     required this.isStreamingImages,
+    required this.isScanningQr,
     required bool isRecordingPaused,
     required this.flashMode,
     required this.exposureMode,
@@ -62,6 +66,7 @@ class CameraValue {
           isRecordingVideo: false,
           isTakingPicture: false,
           isStreamingImages: false,
+          isScanningQr: false,
           isRecordingPaused: false,
           flashMode: FlashMode.auto,
           exposureMode: ExposureMode.auto,
@@ -83,6 +88,9 @@ class CameraValue {
 
   /// True when images from the camera are being streamed.
   final bool isStreamingImages;
+
+  /// True when qr strings from the camera are being streamed.
+  final bool isScanningQr;
 
   final bool _isRecordingPaused;
 
@@ -152,6 +160,7 @@ class CameraValue {
     bool? isRecordingVideo,
     bool? isTakingPicture,
     bool? isStreamingImages,
+    bool? isScanningQr,
     String? errorDescription,
     Size? previewSize,
     bool? isRecordingPaused,
@@ -173,6 +182,7 @@ class CameraValue {
       isRecordingVideo: isRecordingVideo ?? this.isRecordingVideo,
       isTakingPicture: isTakingPicture ?? this.isTakingPicture,
       isStreamingImages: isStreamingImages ?? this.isStreamingImages,
+      isScanningQr: isScanningQr ?? this.isScanningQr,
       isRecordingPaused: isRecordingPaused ?? _isRecordingPaused,
       flashMode: flashMode ?? this.flashMode,
       exposureMode: exposureMode ?? this.exposureMode,
@@ -202,6 +212,7 @@ class CameraValue {
         'errorDescription: $errorDescription, '
         'previewSize: $previewSize, '
         'isStreamingImages: $isStreamingImages, '
+        'isScanningQR: $isScanningQr, '
         'flashMode: $flashMode, '
         'exposureMode: $exposureMode, '
         'focusMode: $focusMode, '
@@ -257,6 +268,7 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   bool _isDisposed = false;
   StreamSubscription<CameraImageData>? _imageStreamSubscription;
+  StreamSubscription<dynamic>? _qrStreamSubscription;
   FutureOr<bool>? _initCalled;
   StreamSubscription<DeviceOrientationChangedEvent>?
       _deviceOrientationSubscription;
@@ -476,6 +488,64 @@ class CameraController extends ValueNotifier<CameraValue> {
       value = value.copyWith(isStreamingImages: false);
       await _imageStreamSubscription?.cancel();
       _imageStreamSubscription = null;
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
+  Future<void> startQrStream(OnQrAvailable onQrAvailable) async {
+    debugPrint('starting qr');
+    assert(defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
+    _throwIfNotInitialized('startQrStream');
+
+    if (value.isRecordingVideo) {
+      throw CameraException(
+        'A video recording is already started.',
+        'startImageStream was called while a video is being recorded.',
+      );
+    }
+
+    if (value.isStreamingImages) {
+      throw CameraException(
+        'A camera has already streaming images.',
+        'startQrStream was called while a camera was streaming images.',
+      );
+    }
+
+    if (value.isScanningQr) {
+      throw CameraException(
+        'A camera already streaming qr',
+        'startQrStream was called while a camera was streaming qr.',
+      );
+    }
+
+    try {
+      _qrStreamSubscription = CameraPlatform.instance
+          .onQrAvailable(_cameraId)
+          .listen((String qr) {
+        onQrAvailable(qr);
+      });
+      value = value.copyWith(isScanningQr: true);
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
+  Future<void> stopQrStream() async {
+    assert(defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
+    _throwIfNotInitialized('stopQrStream');
+
+    if (!value.isScanningQr) {
+      throw CameraException(
+        'No camera is streaming qr',
+        'stopQrStream was called when no camera is streaming qr.',
+      );
+    }
+
+    try {
+      value = value.copyWith(isScanningQr: false);
+      await _qrStreamSubscription?.cancel();
+      _qrStreamSubscription = null;
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -807,6 +877,7 @@ class CameraController extends ValueNotifier<CameraValue> {
       return;
     }
     _unawaited(_deviceOrientationSubscription?.cancel());
+    _unawaited(_qrStreamSubscription?.cancel());
     _isDisposed = true;
     super.dispose();
     if (_initCalled != null) {
